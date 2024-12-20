@@ -1,0 +1,345 @@
+policies:
+ - uid: mitre-attack-gcp-infrastructure-protection
+   name: MITRE ATT&CK Infrastructure Protection Controls for GCP
+   version: "13.1"  # Maps to MITRE ATT&CK version
+   authors:
+     - name: Mondoo
+       email: hello@mondoo.com
+   docs:
+     desc: |
+       This policy implements MITRE ATT&CK controls for GCP Infrastructure Protection:
+
+       Technique T1578: Modify Cloud Compute Infrastructure
+       - T1578.001: Create Snapshot
+       - T1578.002: Create Cloud Instance
+       - T1578.003: Delete Cloud Instance
+       - T1578.004: Revert Cloud Instance
+
+       Technique T1525: Implant Internal Image
+       - Container Image Implants
+       - VM Image Implants
+       - Custom Image Creation
+
+       Related Compliance:
+       - NIST SP 800-53: CM-3, CM-5, CM-8
+       - CIS GCP Foundations 4.1-4.8
+       - ISO 27001 A.12.1.2
+   groups:
+     - title: Cloud Compute Infrastructure Modification
+       checks:
+         - uid: gcp-compute-disk-snapshots
+         - uid: gcp-compute-image-protection
+         - uid: gcp-compute-instance-deletion
+
+queries:
+ - uid: gcp-compute-disk-snapshots
+   title: '[T1578.001] Ensure Compute Engine disk snapshots are encrypted'
+   impact: 90
+   docs:
+     desc: |
+       Adversaries may create snapshots of cloud instances to gain access to 
+       data or as a precursor to exfiltration. Ensure snapshots are encrypted
+       and access controlled.
+
+       MITRE ATT&CK Reference: T1578.001
+     
+     audit: |
+       Find unprotected disk snapshots:
+       ```
+       gcp.compute.snapshots.where( diskEncryptionKey == empty ) {
+         name
+         sourceDisk
+         diskSizeGb
+       }
+       ```
+
+     remediation:
+       - id: terraform
+         desc: |-
+           __Terraform__
+           ```hcl
+           resource "google_compute_disk" "default" {
+             name  = "protected-disk"
+             zone  = "us-central1-a"
+             image = "debian-cloud/debian-11"
+             
+             disk_encryption_key {
+               kms_key_self_link = google_kms_crypto_key.key.id
+             }
+           }
+
+           resource "google_compute_snapshot" "snapshot" {
+             name        = "protected-snapshot"
+             source_disk = google_compute_disk.default.name
+             zone        = "us-central1-a"
+             
+             snapshot_encryption_key {
+               kms_key_self_link = google_kms_crypto_key.key.id
+             }
+
+             guest_flush = true
+           }
+           ```
+       - id: gcloud
+         desc: |-
+           __GCloud CLI__
+           ```bash
+           # Create encrypted snapshot
+           gcloud compute snapshots create protected-snapshot \
+             --source-disk=example-disk \
+             --guest-flush \
+             --kms-key=projects/my-project/locations/global/keyRings/my-keyring/cryptoKeys/my-key \
+             --kms-project=my-project
+           ```
+       - id: console
+         desc: |-
+           __Google Cloud Console__
+           1. Navigate to Compute Engine > Snapshots
+           2. Click Create Snapshot
+           3. Select source disk
+           4. Under Encryption, select Customer-managed encryption key
+           5. Select or create a KMS key
+           6. Enable Guest Flush (recommended)
+           7. Click Create
+   variants:
+     - uid: gcp-compute-disk-snapshots-api
+       filters: asset.platform == "gcp"
+       mql: |
+         gcp.project.computeService.snapshots.all(
+           diskEncryptionKey != empty &&
+           autoCreated == false
+         )
+
+     - uid: gcp-compute-disk-snapshots-terraform-hcl
+       filters: asset.platform == "terraform-hcl" && terraform.resources.contains( nameLabel == "google_compute_snapshot" )
+       mql: |
+         terraform.resources.where( nameLabel == "google_compute_snapshot" ).all(
+           blocks.any( type == "snapshot_encryption_key" )
+         )
+
+     - uid: gcp-compute-disk-snapshots-terraform-plan
+       filters: asset.platform == "terraform-plan" && terraform.plan.resourceChanges.contains( type == "google_compute_snapshot" )
+       mql: |
+         terraform.plan.resourceChanges.where( type == "google_compute_snapshot" ).all(
+           change.after.snapshot_encryption_key != null
+         )
+
+     - uid: gcp-compute-disk-snapshots-terraform-state
+       filters: asset.platform == "terraform-state" && terraform.state.resources.contains( type == "google_compute_snapshot" )
+       mql: |
+         terraform.state.resources.where( type == "google_compute_snapshot" ).all(
+           values.snapshot_encryption_key != null
+         )
+
+ - uid: gcp-compute-image-protection
+   title: '[T1525] Protect Compute Engine images from unauthorized modification'
+   impact: 90
+   docs:
+     desc: |
+       Adversaries may implant malicious code into cloud VM images. Ensure 
+       custom images are protected from unauthorized modification and validate
+       image integrity.
+
+       MITRE ATT&CK Reference: T1525
+     
+     audit: |
+       Check image configurations:
+       ```
+       gcp.compute.images.where( 
+         deprecated == null && 
+         !labels.contains("verified") 
+       ) {
+         name
+         family
+         sourceDisk
+         labels
+       }
+       ```
+
+     remediation:
+       - id: terraform
+         desc: |-
+           __Terraform__
+           ```hcl
+           resource "google_compute_image" "protected-image" {
+             name = "protected-image"
+
+             source_disk = google_compute_disk.protected-disk.id
+
+             guest_os_features {
+               type = "UEFI_COMPATIBLE"
+             }
+
+             guest_os_features {
+               type = "VIRTIO_SCSI_MULTIQUEUE"
+             }
+
+             # Enable Secure Boot and vTPM
+             shielded_instance_config {
+               enable_secure_boot = true
+               enable_vtpm = true
+             }
+
+             labels = {
+               verified = "true"
+               environment = "production"
+             }
+
+             confidential_instance_config {
+               enable_confidential_compute = true
+             }
+           }
+           ```
+       - id: gcloud
+         desc: |-
+           __GCloud CLI__
+           ```bash
+           # Create protected image
+           gcloud compute images create protected-image \
+             --source-disk=example-disk \
+             --licenses=https://www.googleapis.com/compute/v1/projects/vm-options/global/licenses/enable-vmx \
+             --confidential-compute \
+             --labels=verified=true \
+             --shielded-secure-boot \
+             --shielded-vtpm
+           ```
+   variants:
+     - uid: gcp-compute-image-protection-api
+       filters: asset.platform == "gcp"
+       mql: |
+         gcp.project.computeService.images.all(
+           deprecated == null &&
+           shieldedInstanceConfig.enableSecureBoot == true &&
+           shieldedInstanceConfig.enableVtpm == true
+         )
+
+     - uid: gcp-compute-image-protection-terraform-hcl
+       filters: asset.platform == "terraform-hcl" && terraform.resources.contains( nameLabel == "google_compute_image" )
+       mql: |
+         terraform.resources.where( nameLabel == "google_compute_image" ).all(
+           blocks.where( type == "shielded_instance_config" ).all(
+             arguments["enable_secure_boot"] == true &&
+             arguments["enable_vtpm"] == true
+           )
+         )
+
+     - uid: gcp-compute-image-protection-terraform-plan
+       filters: asset.platform == "terraform-plan" && terraform.plan.resourceChanges.contains( type == "google_compute_image" )
+       mql: |
+         terraform.plan.resourceChanges.where( type == "google_compute_image" ).all(
+           change.after.shielded_instance_config.enable_secure_boot == true &&
+           change.after.shielded_instance_config.enable_vtpm == true
+         )
+
+     - uid: gcp-compute-image-protection-terraform-state
+       filters: asset.platform == "terraform-state" && terraform.state.resources.contains( type == "google_compute_image" )
+       mql: |
+         terraform.state.resources.where( type == "google_compute_image" ).all(
+           values.shielded_instance_config.enable_secure_boot == true &&
+           values.shielded_instance_config.enable_vtpm == true
+         )
+
+ - uid: gcp-compute-instance-deletion
+   title: '[T1578.003] Protect Compute Engine instances from unauthorized deletion'
+   impact: 80
+   docs:
+     desc: |
+       Adversaries may attempt to delete cloud instances to disrupt operations
+       or destroy evidence. Ensure instances are protected from unauthorized
+       deletion.
+
+       MITRE ATT&CK Reference: T1578.003
+     
+     audit: |
+       Find instances without deletion protection:
+       ```
+       gcp.compute.instances.where( !deletionProtection ) {
+         name
+         zone
+         machineType
+       }
+       ```
+
+     remediation:
+       - id: terraform
+         desc: |-
+           __Terraform__
+           ```hcl
+           resource "google_compute_instance" "protected" {
+             name         = "protected-instance"
+             machine_type = "e2-medium"
+             zone         = "us-central1-a"
+
+             # Enable deletion protection
+             deletion_protection = true
+
+             # Enable Shielded VM features
+             shielded_instance_config {
+               enable_secure_boot = true
+               enable_vtpm = true
+               enable_integrity_monitoring = true
+             }
+
+             boot_disk {
+               initialize_params {
+                 image = "debian-cloud/debian-11"
+               }
+             }
+
+             network_interface {
+               network = "default"
+             }
+           }
+           ```
+       - id: gcloud
+         desc: |-
+           __GCloud CLI__
+           ```bash
+           # Enable deletion protection
+           gcloud compute instances update example-instance \
+             --deletion-protection
+
+           # Enable Shielded VM features
+           gcloud compute instances update example-instance \
+             --shielded-secure-boot \
+             --shielded-vtpm \
+             --shielded-integrity-monitoring
+           ```
+       - id: console
+         desc: |-
+           __Google Cloud Console__
+           1. Navigate to Compute Engine > VM instances
+           2. Select the instance
+           3. Click Edit
+           4. Enable Deletion protection
+           5. Under Security, enable Shielded VM options
+           6. Click Save
+   variants:
+     - uid: gcp-compute-instance-deletion-api
+       filters: asset.platform == "gcp"
+       mql: |
+         gcp.project.computeService.instances.all(
+           deletionProtection == true &&
+           enableIntegrityMonitoring == true
+         )
+
+     - uid: gcp-compute-instance-deletion-terraform-hcl
+       filters: asset.platform == "terraform-hcl" && terraform.resources.contains( nameLabel == "google_compute_instance" )
+       mql: |
+         terraform.resources.where( nameLabel == "google_compute_instance" ).all(
+           arguments["deletion_protection"] == true
+         )
+
+     - uid: gcp-compute-instance-deletion-terraform-plan
+       filters: asset.platform == "terraform-plan" && terraform.plan.resourceChanges.contains( type == "google_compute_instance" )
+       mql: |
+         terraform.plan.resourceChanges.where( type == "google_compute_instance" ).all(
+           change.after["deletion_protection"] == true
+         )
+
+     - uid: gcp-compute-instance-deletion-terraform-state
+       filters: asset.platform == "terraform-state" && terraform.state.resources.contains( type == "google_compute_instance" )
+       mql: |
+         terraform.state.resources.where( type == "google_compute_instance" ).all(
+           values["deletion_protection"] == true
+         )

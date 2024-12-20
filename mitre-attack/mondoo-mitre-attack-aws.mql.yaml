@@ -1,0 +1,309 @@
+policies:
+  - uid: mitre-attack-aws-infrastructure-protection
+    name: MITRE ATT&CK Infrastructure Protection Controls for AWS
+    version: "13.1"  # Maps to MITRE ATT&CK version
+    authors:
+      - name: Mondoo
+        email: hello@mondoo.com
+    docs:
+      desc: |
+        This policy implements MITRE ATT&CK controls for AWS Infrastructure Protection:
+
+        Technique T1578: Modify Cloud Compute Infrastructure
+        - T1578.001: Create Snapshot
+        - T1578.002: Create Cloud Instance
+        - T1578.003: Delete Cloud Instance
+        - T1578.004: Revert Cloud Instance
+
+        Technique T1525: Implant Internal Image
+        - Container Image Implants
+        - VM Image Implants
+        - Custom AMI Creation
+
+        Related Compliance:
+        - NIST SP 800-53: CM-3, CM-5, CM-8
+        - SOC 2 CC7.1, CC7.2
+        - CIS AWS Foundations 2.1.1, 2.1.2
+    groups:
+      - title: Cloud Compute Infrastructure Modification
+        checks:
+          - uid: aws-ebs-snapshot-encryption
+          - uid: aws-ec2-image-protection
+          - uid: aws-ec2-instance-termination
+
+queries:
+  - uid: aws-ebs-snapshot-encryption
+    title: '[T1578.001] Ensure EBS snapshots are encrypted'
+    impact: 90
+    docs:
+      desc: |
+        Adversaries may create snapshots of cloud instances to gain access to 
+        data or as a precursor to exfiltration. Ensure snapshots are encrypted
+        and access controlled.
+
+        MITRE ATT&CK Reference: T1578.001
+      
+      audit: |
+        Find unencrypted EBS snapshots:
+        ```
+        aws.ec2.snapshots.where( encrypted == false ) {
+          id
+          region
+          volumeId
+        }
+        ```
+
+      remediation:
+        - id: terraform
+          desc: |-
+            __Terraform__
+            ```hcl
+            resource "aws_ebs_snapshot" "example" {
+              volume_id   = aws_ebs_volume.example.id
+              encrypted   = true
+              kms_key_id  = aws_kms_key.example.arn
+              
+              tags = {
+                Name = "protected-snapshot"
+              }
+            }
+
+            # Enable EBS encryption by default
+            resource "aws_ebs_encryption_by_default" "example" {
+              enabled = true
+            }
+            ```
+        - id: aws-cli
+          desc: |-
+            __AWS CLI__
+            ```bash
+            # Create encrypted snapshot
+            aws ec2 create-snapshot \
+              --volume-id vol-1234567890abcdef0 \
+              --encrypted \
+              --kms-key-id alias/aws/ebs
+
+            # Enable encryption by default
+            aws ec2 enable-ebs-encryption-by-default
+            ```
+        - id: aws-console
+          desc: |-
+            __AWS Console__
+            1. Open the Amazon EC2 console
+            2. Choose Snapshots
+            3. Choose Create snapshot
+            4. Select the source volume
+            5. Enable "Encrypt this snapshot"
+            6. Select a KMS key
+    variants:
+      - uid: aws-ebs-snapshot-encryption-api
+        filters: asset.platform == "aws"
+        mql: |
+          aws.ec2.snapshots.all(
+            encrypted == true
+          )
+
+      - uid: aws-ebs-snapshot-encryption-terraform-hcl
+        filters: asset.platform == "terraform-hcl" && terraform.resources.contains( nameLabel == "aws_ebs_snapshot" )
+        mql: |
+          terraform.resources.where( nameLabel == "aws_ebs_snapshot" ).all(
+            arguments["encrypted"] == true
+          )
+
+      - uid: aws-ebs-snapshot-encryption-terraform-plan
+        filters: asset.platform == "terraform-plan" && terraform.plan.resourceChanges.contains( type == "aws_ebs_snapshot" )
+        mql: |
+          terraform.plan.resourceChanges.where( type == "aws_ebs_snapshot" ).all(
+            change.after["encrypted"] == true
+          )
+
+      - uid: aws-ebs-snapshot-encryption-terraform-state
+        filters: asset.platform == "terraform-state" && terraform.state.resources.contains( type == "aws_ebs_snapshot" )
+        mql: |
+          terraform.state.resources.where( type == "aws_ebs_snapshot" ).all(
+            values["encrypted"] == true
+          )
+
+  - uid: aws-ec2-image-protection
+    title: '[T1525] Protect EC2 AMIs from unauthorized modification'
+    impact: 90
+    docs:
+      desc: |
+        Adversaries may implant malicious code into cloud VM images or create 
+        backdoored AMIs. Ensure AMIs are protected from unauthorized modification
+        and validate image integrity.
+
+        MITRE ATT&CK Reference: T1525
+      
+      audit: |
+        Find publicly accessible AMIs:
+        ```
+        aws.ec2.images.where( public == true ) {
+          id
+          name
+          region
+          tags
+        }
+        ```
+
+      remediation:
+        - id: terraform
+          desc: |-
+            __Terraform__
+            ```hcl
+            resource "aws_ami" "example" {
+              name                = "protected-ami"
+              virtualization_type = "hvm"
+              root_device_name    = "/dev/xvda"
+
+              ebs_block_device {
+                device_name = "/dev/xvda"
+                encrypted   = true
+                kms_key_id  = aws_kms_key.example.arn
+              }
+
+              # Ensure AMI is private
+              public = false
+
+              # Enable IMDSv2
+              imds_support = "v2.0"
+            }
+            ```
+        - id: aws-cli
+          desc: |-
+            __AWS CLI__
+            ```bash
+            # Modify AMI to be private
+            aws ec2 modify-image-attribute \
+              --image-id ami-1234567890abcdef0 \
+              --launch-permission "Remove=[{Group=all}]"
+
+            # Require IMDSv2 for instances launched from AMI
+            aws ec2 modify-image-attribute \
+              --image-id ami-1234567890abcdef0 \
+              --imds-support v2.0
+            ```
+    variants:
+      - uid: aws-ec2-image-protection-api
+        filters: asset.platform == "aws"
+        mql: |
+          aws.ec2.images.all(
+            public == false &&
+            encrypted == true
+          )
+
+      - uid: aws-ec2-image-protection-terraform-hcl
+        filters: asset.platform == "terraform-hcl" && terraform.resources.contains( nameLabel == "aws_ami" )
+        mql: |
+          terraform.resources.where( nameLabel == "aws_ami" ).all(
+            arguments["public"] != true &&
+            blocks.where( type == "ebs_block_device" ).all(
+              arguments["encrypted"] == true
+            )
+          )
+
+      - uid: aws-ec2-image-protection-terraform-plan
+        filters: asset.platform == "terraform-plan" && terraform.plan.resourceChanges.contains( type == "aws_ami" )
+        mql: |
+          terraform.plan.resourceChanges.where( type == "aws_ami" ).all(
+            change.after["public"] != true &&
+            change.after.ebs_block_device.all(
+              encrypted == true
+            )
+          )
+
+      - uid: aws-ec2-image-protection-terraform-state
+        filters: asset.platform == "terraform-state" && terraform.state.resources.contains( type == "aws_ami" )
+        mql: |
+          terraform.state.resources.where( type == "aws_ami" ).all(
+            values["public"] != true &&
+            values.ebs_block_device.all(
+              encrypted == true
+            )
+          )
+
+  - uid: aws-ec2-instance-termination
+    title: '[T1578.003] Protect EC2 instances from unauthorized termination'
+    impact: 80
+    docs:
+      desc: |
+        Adversaries may attempt to delete cloud instances to disrupt operations 
+        or destroy evidence. Ensure instances are protected from unauthorized 
+        termination.
+
+        MITRE ATT&CK Reference: T1578.003
+      
+      audit: |
+        Find instances without termination protection:
+        ```
+        aws.ec2.instances.where( !deletionProtection ) {
+          instanceId
+          name
+          region
+        }
+        ```
+
+      remediation:
+        - id: terraform
+          desc: |-
+            __Terraform__
+            ```hcl
+            resource "aws_instance" "example" {
+              ami           = "ami-1234567890abcdef0"
+              instance_type = "t3.micro"
+              
+              # Enable termination protection
+              disable_api_termination = true
+              
+              # Enable detailed monitoring
+              monitoring = true
+              
+              tags = {
+                Name = "protected-instance"
+              }
+            }
+            ```
+        - id: aws-cli
+          desc: |-
+            __AWS CLI__
+            ```bash
+            # Enable termination protection
+            aws ec2 modify-instance-attribute \
+              --instance-id i-1234567890abcdef0 \
+              --disable-api-termination
+            ```
+        - id: aws-console
+          desc: |-
+            __AWS Console__
+            1. Open the EC2 console
+            2. Select the instance
+            3. Choose Actions → Instance Settings → Change Termination Protection
+            4. Enable termination protection
+    variants:
+      - uid: aws-ec2-instance-termination-api
+        filters: asset.platform == "aws"
+        mql: |
+          aws.ec2.instances.all(
+            deletionProtection == true
+          )
+
+      - uid: aws-ec2-instance-termination-terraform-hcl
+        filters: asset.platform == "terraform-hcl" && terraform.resources.contains( nameLabel == "aws_instance" )
+        mql: |
+          terraform.resources.where( nameLabel == "aws_instance" ).all(
+            arguments["disable_api_termination"] == true
+          )
+
+      - uid: aws-ec2-instance-termination-terraform-plan
+        filters: asset.platform == "terraform-plan" && terraform.plan.resourceChanges.contains( type == "aws_instance" )
+        mql: |
+          terraform.plan.resourceChanges.where( type == "aws_instance" ).all(
+            change.after["disable_api_termination"] == true
+          )
+
+      - uid: aws-ec2-instance-termination-terraform-state
+        filters: asset.platform == "terraform-state" && terraform.state.resources.contains( type == "aws_instance" )
+        mql: |
+          terraform.state.resources.where( type == "aws_instance" ).all(
+            values["disable_api_termination"] == true
+          )
