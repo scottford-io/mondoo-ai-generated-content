@@ -1,4 +1,4 @@
- Understanding Mondoo Policy Variants: One Policy for Your Entire SDLC
+# Understanding Mondoo Policy Variants: One Policy for Your Entire SDLC
 
 Security and compliance checks shouldn't be an afterthought that only happens in production. Modern DevSecOps practices require shifting security left, testing infrastructure configurations throughout the development lifecycle. But maintaining separate policies for development, staging, and production environments is error-prone and creates unnecessary maintenance overhead.
 
